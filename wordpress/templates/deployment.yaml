@@ -1,0 +1,199 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wordpress.fullname" . }}
+  labels:
+    {{- include "wordpress.labels" . | nindent 4 }}
+spec:
+{{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+{{- end }}
+  selector:
+    matchLabels:
+      {{- include "wordpress.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+    {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      labels:
+        {{- include "wordpress.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wordpress.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: copy-wordpress-app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: [sh, -cx]
+          args:
+            - >-
+              echo Copying Wordpress source ...;
+              ls -l /usr/src/wordpress/;
+              cp -r /usr/src/wordpress/. /wordpress-app/;
+              if [ -z "$(ls -A /wordpress-data/wp-content/)" ]; then echo "Copying initial files to wp-content ..."; cp -r /usr/src/wordpress/wp-content/* /wordpress-data/wp-content/; fi;
+          volumeMounts:
+            - mountPath: /wordpress-app/
+              name: wordpress-app
+            - mountPath: /wordpress-data/wp-content/
+              name: wordpress-data
+              subPath: wp-content
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: WORDPRESS_DB_HOST
+              value: {{ .Values.database.host }}
+            - name: WORDPRESS_DB_NAME
+              value: {{ .Values.database.database }}
+            - name: WORDPRESS_DB_USER
+              value:  {{ .Values.database.user }}
+            - name: WORDPRESS_DB_PASSWORD_FILE
+              value: "/run/secrets/wordpress/db_password"
+            - name: WORDPRESS_TABLE_PREFIX
+              value: {{ .Values.database.table_prefix }}
+            - name: WORDPRESS_CONFIG_EXTRA
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "wordpress.fullname" . }}-config
+                  key: env-wp-config-extra
+            - name: WORDPRESS_DEBUG
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "wordpress.fullname" . }}-config
+                  key: env-wp-debug
+                  optional: true
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.livenessProbe.successThreshold }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            tcpSocket:
+              port: php-fpm
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.readinessProbe.successThreshold }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            tcpSocket:
+              port: php-fpm
+          {{- end }}
+          ports:
+            - name: php-fpm
+              containerPort: 9000
+              protocol: TCP
+          volumeMounts:
+            - mountPath: /var/www/html/
+              name: wordpress-app
+            - mountPath: /var/www/html/wp-content/
+              name: wordpress-data
+              subPath: wp-content
+            - mountPath: /usr/local/etc/php-fpm.d/zz-docker.conf
+              name: wordpress-config
+              subPath: php-fpm-zz-docker.conf
+            - mountPath: /usr/local/etc/php/conf.d/uploads.ini
+              name: wordpress-config
+              subPath: php-uploads.ini
+            - mountPath: /usr/local/etc/php/conf.d/opcache-recommended.ini
+              name: wordpress-config
+              subPath: php-opcache-recommended.ini
+            - mountPath: /usr/local/bin/wp
+              name: wordpress-code
+              subPath: wp-cli
+            - mountPath: /run/secrets/wordpress/
+              name: wordpress-config
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "test -f /var/www/html/wp-config.php && chmod 444 /var/www/html/wp-config.php"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        - name: nginx
+          image: "{{ .Values.imageWeb.repository }}:{{ .Values.imageWeb.tag | default "alpine" }}"
+          #command: [nginx-debug, '-g', 'daemon off;']
+          imagePullPolicy: "IfNotPresent"
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.livenessProbe.successThreshold }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            httpGet:
+              path: /wp-admin/install.php
+              port: http
+              scheme: HTTP
+              httpHeaders:
+                - name: X-Forwarded-Proto
+                  value: https
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            successThreshold: {{ .Values.readinessProbe.successThreshold }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            tcpSocket:
+              port: http
+          {{- end }}
+          volumeMounts:
+            - mountPath: /var/www/html/
+              name: wordpress-app
+            - mountPath: /var/www/html/wp-content/
+              name: wordpress-data
+              subPath: wp-content
+            - mountPath: /etc/nginx/nginx.conf
+              name: wordpress-config
+              subPath: nginx.conf
+            - mountPath: /tmp/
+              name: nginx-tmp
+      volumes:
+        - name: wordpress-app
+          emptyDir:
+        - name: wordpress-config
+          configMap:
+            name: {{ include "wordpress.fullname" . }}-config
+        - name: wordpress-data
+          persistentVolumeClaim:
+            claimName: {{ include "wordpress.fullname" . }}-data
+        - name: nginx-tmp
+          emptyDir:
+            medium: Memory
+        - name: wordpress-code
+          configMap:
+            name: {{ include "wordpress.fullname" . }}-code
+            defaultMode: 0755
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

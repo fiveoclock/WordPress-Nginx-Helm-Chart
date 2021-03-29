@@ -1,0 +1,17 @@
+{{- if and .Values.wordpress.persistence.enabled (not .Values.wordpress.persistence.existingClaim) }}
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: {{ include "wordpress.fullname" . }}-data
+  labels:
+    {{- include "wordpress.labels" . | nindent 4 }}
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "wordpress.tplValue" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    - {{ .Values.wordpress.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.wordpress.persistence.size | quote }}
+{{- end }}

@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wordpress.fullname" . }}-code
+  labels:
+    {{- include "wordpress.labels" . | nindent 4 }}
+data:
+  wp-cli: |-
+    #!/bin/sh
+    WP_PATH=/var/www/html/
+    CLI=/tmp/wp-cli.phar
+    if ! [ -f "$CLI" ]; then
+        curl https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o $CLI
+    fi
+    export PAGER="more"
+    php $CLI --path=$WP_PATH "$@"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wordpress.fullname" . }}-config
+  labels:
+    {{- include "wordpress.labels" . | nindent 4 }}
+data:
+  db_password: "{{ .Values.database.password }}"
+  env-wp-config-extra: |
+    {{ .Values.wordpress.config_extra | nindent 4 }}
+  env-wp-debug: ""
+  php-fpm-zz-docker.conf: |-
+    [global]
+    daemonize = no
+
+    [www]
+    listen = 9000
+    listen.allowed_clients = ::1,127.0.0.1,10.42.0.1
+    ;listen.allowed_clients 127.0.0.1,10.42.0.0/16
+    ;listen = /run/php/fpm.sock
+    
+  php-opcache-recommended.ini: |-
+    ; Enables the opcode cache. When disabled, code is not optimised or cached.
+    ; default = 1
+    opcache.enable=1
+    
+    ; The size of the shared memory storage used by OPcache, in megabytes.
+    ; default = 128
+    opcache.memory_consumption=128
+    
+    ; The amount of memory for interned strings in Mbytes.
+    ; default = 8
+    opcache.interned_strings_buffer=8
+    
+    ; The maximum number of keys (scripts) in the OPcache hash table.
+    ; Only numbers between 200 and 100000 are allowed.
+    ; default = 10000
+    opcache.max_accelerated_files=10000
+    
+    ; Setting this directive to 1 will make PHP check the timestamps of 
+    ; each file to see if it has been modified and if so it will update 
+    ; the cache for that file. When set to 0 it will not update each files 
+    ; cache and you will need to restart PHP each time you modify a file.
+    ; default = 1
+    opcache.validate_timestamps=1
+    
+    ; How often (in seconds) to check file timestamps for changes to the
+    ; shared memory storage allocation.
+    ; default = 2
+    opcache.revalidate_freq=60
+
+    
+  php-uploads.ini: |-
+    ; This sets the maximum amount of memory in bytes that a script is allowed to allocate. 
+    memory_limit = 256M
+    
+    ; The maximum number of files allowed to be uploaded simultaneously.
+    max_file_uploads = 50
+    
+    ; The maximum size of an uploaded file
+    upload_max_filesize = 96M
+    
+    ; Sets max size of post data allowed. This setting also affects file upload.
+    ; To upload large files, this value must be larger than upload_max_filesize.
+    ; Generally speaking, memory_limit should be larger than post_max_size. 
+    post_max_size = 96M
+    
+    ; This sets the maximum time in seconds a script is allowed to run before it is terminated by the parser. 
+    max_execution_time = 300
+    
+    ; This sets the maximum time in seconds a script is allowed to parse input data, like POST and GET. 
+    ; Timing begins at the moment PHP is invoked at the server and ends when execution begins. The default 
+    ; setting is -1, which means that max_execution_time is used instead.
+    max_input_time = 600
+
+    
+  nginx.conf: |-
+      worker_processes            auto;
+      
+      error_log                   /dev/stderr;
+      pid                         /tmp/nginx.pid;
+      worker_rlimit_nofile        8192;
+
+      events {
+        worker_connections        1024;
+        multi_accept              on;
+      }
+      
+      http {
+        # cache informations about FDs, frequently accessed files
+        # can boost performance, but you need to test those values
+        open_file_cache           max=40000 inactive=20s;
+        open_file_cache_valid     60s;
+        open_file_cache_min_uses  2;
+        open_file_cache_errors    on;
+
+        # copies data between one FD and other from within the kernel
+        # faster than read() + write()
+        sendfile                  on;
+
+        # send headers in one piece, it is better than sending them one by one
+        tcp_nopush                on;
+
+        # don't buffer data sent, good for small data bursts in real time
+        tcp_nodelay on;
+        
+        # gzip settings
+        gzip                      on;
+        gzip_buffers              16 8k;
+        gzip_min_length           10k;
+        gzip_proxied              any;
+        gzip_types
+            text/css
+            text/javascript
+            text/xml
+            text/plain
+            text/x-component
+            application/javascript
+            application/x-javascript
+            application/json
+            application/xml
+            application/rss+xml
+            application/atom+xml
+            font/truetype
+            font/opentype
+            application/vnd.ms-fontobject
+            image/svg+xml;
+        
+        # allow the server to close connection on non responding client, this will free up memory
+        reset_timedout_connection on;
+
+        # request timed out -- default 60
+        client_body_timeout       20;
+
+        # if client stop responding, free up memory -- default 60
+        send_timeout              10;
+
+        # server will close connection after this time -- default 75
+        keepalive_timeout         30;
+
+        # number of requests client can make over keep-alive -- for testing environment
+        keepalive_requests        10000;
+    
+        # other settings
+        client_max_body_size      96M;
+        server_tokens             off;
+        
+        include                   mime.types;
+        default_type              application/octet-stream;
+        add_header                X-Frame-Options SAMEORIGIN;
+        
+        # trust these ips to set the correct http_x_forwarded_for header
+        set_real_ip_from          10.0.0.0/8;
+        set_real_ip_from          127.0.0.1;
+        real_ip_header            X-Forwarded-For;
+        
+        # to boost I/O on HDD we can disable access logs
+        # access_log              off;
+        log_format                main '$remote_addr - $status [$request] $body_bytes_sent '
+                                     '"$http_referer" "$http_user_agent" via $realip_remote_addr';
+        access_log                "/dev/stdout" main buffer=2048 flush=5s;
+
+        client_body_temp_path     /tmp/client_temp 1 2;
+        proxy_temp_path           /tmp/proxy_temp_path 1 2;
+        fastcgi_temp_path         /tmp/fastcgi_temp 1 2;
+        uwsgi_temp_path           /tmp/uwsgi_temp 1 2;
+        scgi_temp_path            /tmp/scgi_temp 1 2;
+
+        ####################################
+        ### fastcgi cache start
+        #fastcgi_cache_path        /tmp/fastcgi-cache levels=1:2 keys_zone=WORDPRESS:100m inactive=10m;
+        #fastcgi_cache_key         "$scheme$request_method$host$request_uri";
+        #fastcgi_cache_use_stale   error timeout invalid_header http_500;
+        #fastcgi_ignore_headers    Cache-Control Expires Set-Cookie;
+        ### fastcgi cache end
+        ####################################
+
+        server { 
+          listen                  8080 default_server;
+          server_name             _; 
+          root                    /var/www/html; 
+          index                   index.php;
+          
+          location / {
+            # deliver files directly or from php
+            # $uri              - for regular files (html, css, js, jpg, ...)
+            # $uri/             - needed for indexes like /wp-config/ or /tag/nice/
+            # /index.php?$args  - sends the request to wordpress using fastcgi / php
+            try_files $uri $uri/ /index.php?$args;
+          }
+          
+          # DISABLE_DIRECT_CONTENT_PHP_EXECUTION
+          location ~ /(?:wp-content|wp-includes|uploads)/.*\.php$ {
+            deny all;
+            #access_log off;
+            #log_not_found off;
+          }
+          
+          # Deny access to load load-scripts.php, load-styles.php; can be used for DOS attacks;
+          location ~ \/wp-admin\/load\-(scripts|styles)\.php {
+            deny all;
+          }
+
+          # START Nginx Rewrites for Rank Math Sitemaps
+          rewrite ^/sitemap_index.xml$ /index.php?sitemap=1 last;
+          rewrite ^/([^/]+?)-sitemap([0-9]+)?.xml$ /index.php?sitemap=$1&sitemap_n=$2 last;
+          # END Nginx Rewrites for Rank Math Sitemaps
+          
+          ####################################
+          ### fastcgi cache start
+          # define when to skip the cache
+          #set $skip_cache 0;
+          # Requests with a query string should not be cached
+          #if ($query_string != "") {
+          #  set $skip_cache 1;
+          #}
+          # Don't cache uris containing the following segments
+          #if ($request_uri ~ "/wp-admin/|/xmlrpc.php|wp-.*.php|index.php") {
+          #  set $skip_cache 1;
+          #}
+          # Don't use the cache for logged in users or recent commenters
+          #if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in") {
+          #  set $skip_cache 1;
+          #}
+          ### fastcgi cache end
+          ####################################
+          
+          
+          # send .php requests to wordpress using (fastcgi)
+          location ~ [^/]\.php(/|$) {
+            # split the request path into its components
+            fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+            # check if the requested php file exits;
+            # don't send the request to fastcgi if no such file exits (saves some resources)
+            if (!-f $document_root$fastcgi_script_name) {
+              return 404;
+            }
+            
+            # include fastcgi_params from nginx directory (/etc/nginx/fastcgi_params)
+            include                         fastcgi_params;
+            # set the script filename (eg. /var/www/html/index.php)
+            fastcgi_param SCRIPT_FILENAME   $document_root$fastcgi_script_name;
+            fastcgi_param PATH_INFO         $fastcgi_path_info;
+            fastcgi_param PATH_TRANSLATED   $document_root$fastcgi_path_info;
+            fastcgi_index                   index.php;
+            # tell wordpress that the request came over https to avoid redirect-loops
+            fastcgi_param  REQUEST_SCHEME   'https';
+            fastcgi_param  HTTPS            'on';
+            # hide PHP header
+            fastcgi_hide_header             X-Powered-By;
+                                            
+            # send the request to php
+            fastcgi_pass                    localhost:9000;
+            #fastcgi_pass                    unix:/run/php/fpm.sock;
+            
+            ####################################
+            ### fastcgi cache start
+            #fastcgi_cache_methods           GET HEAD;
+            #fastcgi_cache_bypass            $skip_cache;
+            #fastcgi_no_cache                $skip_cache;
+            #fastcgi_cache                   WORDPRESS;
+            #fastcgi_cache_valid             10m;
+            #add_header X-FastCGI-Cache      $upstream_cache_status;
+            ### fastcgi cache end
+            ####################################
+          }
+          
+          # enable client cache for media files and fonts
+          location ~* \.(css|js|ico|gif|jpeg|jpg|webp|png|svg|eot|otf|woff|woff2|ttf|ogg|pdf)$ {
+            expires           120d;
+          }
+        }
+      }

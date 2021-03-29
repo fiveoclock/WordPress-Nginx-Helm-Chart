@@ -1,0 +1,56 @@
+# modified to create multiple ingresses using range (interate over dict)
+#   the special variable "." is remapped to $top, ...
+#   range will map the values of the current ingress definition to "."
+#   Furthermore "." has to be changed to "$" when using include "something"
+
+{{- $top := . -}}
+{{- range .Values.ingresses }}
+---
+{{- $fullName := include "wordpress.fullname" $ -}}
+{{- $svcPort := $top.Values.service.port -}}
+{{- if semverCompare ">=1.19-0" $top.Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-{{ .name }}
+  labels:
+    {{- include "wordpress.labels" $ | nindent 4 }}
+  {{- with .annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .tls }}
+  tls:
+    {{- range .tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              {{- if semverCompare ">=1.19-0" $top.Capabilities.KubeVersion.GitVersion }}
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+              {{- else }}
+                serviceName: {{ $fullName }}
+                servicePort: {{ $svcPort }}
+              {{- end }}
+          {{- end }}
+    {{- end }}
+  {{- end }}
